@@ -115,9 +115,26 @@ jobs:
       # Le note di rilascio inchiodano il commit sorgente: il repo dei binari
       # non ha il codice, quella riga e' l'unica tracciabilita'.
       # ---------------------------------------------------------------------
-      - name: Build e release
+      # `--publish always` e OBBLIGATORIO: la politica predefinita di
+      # electron-builder e "onTagOrDraft", cioe pubblica solo se il build parte da
+      # un tag o se una draft esiste gia. Qui non siamo su un tag, quindi senza
+      # questo flag electron-builder costruisce e poi SALTA la pubblicazione
+      # ("release doesn't exist and not created"), lasciando un run verde e
+      # nessuna release: il caso peggiore, un successo apparente.
+      #
+      # `releaseType` e un'altra cosa: dice CHE TIPO di release creare (draft o
+      # pubblica). Servono entrambi.
+      #
+      # Chiamiamo electron-builder con `exec` invece che via lo script `dist`,
+      # cosi gli argomenti arrivano senza ambiguita di inoltro.
+      - name: Build
+        run: pnpm -F @simposia/desktop build
+        shell: pwsh
+
+      - name: Release
         run: >
-          pnpm -F @simposia/desktop dist
+          pnpm -F @simposia/desktop exec electron-builder
+          --publish always
           --config.publish.releaseType=${{ inputs.release_type }}
           "--config.releaseInfo.releaseNotes=Costruito da RiverMeet@${{ inputs.source_ref }}"
         shell: pwsh
@@ -136,13 +153,38 @@ jobs:
 
       # Il nome dell'asset e' quello che il sito linka a URL fisso: se cambia,
       # il pulsante "Scarica per Windows" va in 404. Meglio scoprirlo qui.
+      # Nota di sintassi: in PowerShell "$var:" e' letto come variabile con
+      # qualificatore di scope e non compila. Si delimita con ${var}.
       - name: Verifica il nome dell'asset atteso dal sito
         run: |
           $atteso = "apps/desktop/release/Simposia-Docente-Setup.exe"
           if (-not (Test-Path $atteso)) {
-            Write-Error "Manca $atteso: la pagina /download del sito punta a questo nome esatto e andrebbe in 404."
+            Write-Host "Manca ${atteso} . La pagina /download punta a questo nome esatto e andrebbe in 404."
             exit 1
           }
           $mb = [math]::Round((Get-Item $atteso).Length / 1MB, 1)
           Write-Host "Installer presente, $mb MB."
         shell: pwsh
+
+      # La release esiste davvero e ha l'asset col nome giusto? Il passo sopra
+      # guarda il disco del runner, questo guarda cio' che GitHub ha ricevuto.
+      - name: Verifica la release creata
+        run: |
+          $v = "${{ steps.versione.outputs.version }}"
+          # NON si usa /releases/tags/<tag>: quell'endpoint non trova le release
+          # DRAFT (una draft non ha ancora un tag git). Si elencano e si filtra.
+          $tutte = gh api "repos/$env:GITHUB_REPOSITORY/releases" --paginate | ConvertFrom-Json
+          $r = $tutte | Where-Object { $_.tag_name -eq "v$v" } | Select-Object -First 1
+          if (-not $r) {
+            Write-Host "Nessuna release v$v su GitHub: electron-builder ha saltato la pubblicazione."
+            exit 1
+          }
+          $nomi = $r.assets.name -join ", "
+          Write-Host "Release v$v creata. draft=$($r.draft) asset: $nomi"
+          if ($r.assets.name -notcontains "Simposia-Docente-Setup.exe") {
+            Write-Host "L asset con il nome atteso dal sito non c e."
+            exit 1
+          }
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
