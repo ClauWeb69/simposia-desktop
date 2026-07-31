@@ -1,0 +1,148 @@
+# Build e rilascio dell'app docente (Windows) su runner GitHub gratuito.
+#
+# ⚠️ QUESTO FILE NON VA IN RIVERMEET/.github/workflows.
+# Vive qui solo per essere versionato e rivisto insieme al sorgente. Va COPIATO
+# in `ClauWeb69/simposia-desktop` sotto `.github/workflows/build-windows.yml`.
+# Deve stare LI' perche':
+#   - simposia-desktop e' PUBBLICO → i runner GitHub sono gratuiti e illimitati,
+#     `windows-latest` compreso. In RiverMeet (privato) consumerebbe minuti.
+#   - la release va creata in quel repo, e un workflow puo' scrivere nel PROPRIO
+#     repo col GITHUB_TOKEN automatico, senza token aggiuntivi.
+#
+# Installazione, una volta sola:
+#   1. genera una chiave SSH dedicata (senza passphrase);
+#   2. la PUBBLICA va in RiverMeet → Settings → Deploy keys, SOLA LETTURA;
+#   3. la PRIVATA va in simposia-desktop → Settings → Secrets → Actions,
+#      col nome RIVERMEET_DEPLOY_KEY;
+#   4. copia questo file come .github/workflows/build-windows.yml in simposia-desktop.
+#
+# Procedura completa e collaudo: infra/runbooks/desktop-release.md
+
+name: Build app docente (Windows)
+
+on:
+  # SOLO manuale: nessun trigger da push o pull request. Una pull request da un
+  # fork non puo' quindi raggiungere il segreto con la chiave del repo privato.
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Commit di RiverMeet da cui costruire (SHA COMPLETO, non un branch)"
+        required: true
+      release_type:
+        description: "draft = crea la release nascosta, da pubblicare a mano dopo il collaudo"
+        required: true
+        type: choice
+        options: [draft, release]
+        default: draft
+
+# Il minimo indispensabile: scrivere la release in QUESTO repo.
+permissions:
+  contents: write
+
+concurrency:
+  group: build-app-docente
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      # ---------------------------------------------------------------------
+      # Sorgente privato, solo le cartelle che servono davvero.
+      #
+      # Il checkout mirato NON e' una barriera di sicurezza: la chiave legge
+      # comunque tutto RiverMeet. Serve a rendere ESPLICITO da cosa dipende il
+      # build dell'app: se un domani il desktop iniziasse a dipendere da
+      # apps/web, questo passo fallirebbe invece di funzionare per caso.
+      #
+      # In modalita' "cone" i file alla RADICE sono sempre inclusi, quindi
+      # package.json, pnpm-workspace.yaml (serve al protocollo `catalog:` di
+      # zod), pnpm-lock.yaml e .npmrc arrivano senza elencarli.
+      # ---------------------------------------------------------------------
+      - name: Sorgente (RiverMeet, privato)
+        uses: actions/checkout@v4
+        with:
+          repository: ClauWeb69/RiverMeet
+          ref: ${{ inputs.source_ref }}
+          ssh-key: ${{ secrets.RIVERMEET_DEPLOY_KEY }}
+          sparse-checkout: |
+            apps/desktop
+            packages/shared
+          persist-credentials: false
+
+      - name: Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: pnpm dalla versione dichiarata in packageManager
+        run: corepack enable
+        shell: pwsh
+
+      # HUSKY=0 disattiva il `prepare` della radice: .husky non e' nel checkout
+      # mirato e i git hook non servono a una build.
+      - name: Dipendenze (solo il sottoalbero del desktop)
+        run: pnpm install --filter @simposia/desktop...
+        shell: pwsh
+        env:
+          HUSKY: 0
+
+      # I gate: se uno e' rosso non si impacchetta niente.
+      - name: Typecheck
+        run: pnpm -F @simposia/desktop typecheck
+        shell: pwsh
+
+      - name: Test
+        run: pnpm -F @simposia/desktop test
+        shell: pwsh
+
+      - name: Versione da rilasciare
+        id: versione
+        run: |
+          $v = (Get-Content apps/desktop/package.json | ConvertFrom-Json).version
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Verra' creata la release v$v"
+        shell: pwsh
+
+      # ---------------------------------------------------------------------
+      # Build + pubblicazione.
+      #
+      # Il tag della release lo decide electron-builder dalla versione in
+      # apps/desktop/package.json (v0.3.0): non e' un input, cosi' non puo'
+      # divergere da cio' che c'e' dentro il pacchetto.
+      #
+      # Le note di rilascio inchiodano il commit sorgente: il repo dei binari
+      # non ha il codice, quella riga e' l'unica tracciabilita'.
+      # ---------------------------------------------------------------------
+      - name: Build e release
+        run: >
+          pnpm -F @simposia/desktop dist
+          --config.publish.releaseType=${{ inputs.release_type }}
+          "--config.releaseInfo.releaseNotes=Costruito da RiverMeet@${{ inputs.source_ref }}"
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # L'installer anche come artefatto del run: si scarica e si collauda
+      # senza dipendere dallo stato della release.
+      - name: Installer come artefatto
+        uses: actions/upload-artifact@v4
+        with:
+          name: Simposia-Docente-Setup-v${{ steps.versione.outputs.version }}
+          path: apps/desktop/release/Simposia-Docente-Setup.exe
+          if-no-files-found: error
+          retention-days: 14
+
+      # Il nome dell'asset e' quello che il sito linka a URL fisso: se cambia,
+      # il pulsante "Scarica per Windows" va in 404. Meglio scoprirlo qui.
+      - name: Verifica il nome dell'asset atteso dal sito
+        run: |
+          $atteso = "apps/desktop/release/Simposia-Docente-Setup.exe"
+          if (-not (Test-Path $atteso)) {
+            Write-Error "Manca $atteso: la pagina /download del sito punta a questo nome esatto e andrebbe in 404."
+            exit 1
+          }
+          $mb = [math]::Round((Get-Item $atteso).Length / 1MB, 1)
+          Write-Host "Installer presente, $mb MB."
+        shell: pwsh
