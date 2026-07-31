@@ -141,6 +141,21 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # L'updater legge il feed da resources/app-update.yml, generato da
+      # electron-builder dalla sezione `publish`. Se manca, l'app non se ne
+      # accorge al build: fallisce a runtime sul computer del docente, dove
+      # nessuno lo vede. Meglio romperlo qui.
+      - name: Verifica il feed dell aggiornamento nel pacchetto
+        run: |
+          $feed = "apps/desktop/release/win-unpacked/resources/app-update.yml"
+          if (-not (Test-Path $feed)) {
+            Write-Host "Manca app-update.yml nel pacchetto: l aggiornamento automatico non funzionerebbe."
+            exit 1
+          }
+          Write-Host "Feed presente:"
+          Get-Content $feed
+        shell: pwsh
+
       # L'installer anche come artefatto del run: si scarica e si collauda
       # senza dipendere dallo stato della release.
       - name: Installer come artefatto
