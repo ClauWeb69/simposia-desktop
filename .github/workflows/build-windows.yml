@@ -59,9 +59,14 @@ jobs:
       # In modalita' "cone" i file alla RADICE sono sempre inclusi, quindi
       # package.json, pnpm-workspace.yaml (serve al protocollo `catalog:` di
       # zod), pnpm-lock.yaml e .npmrc arrivano senza elencarli.
+      #
+      # `patches` invece va elencata: pnpm-workspace.yaml dichiara in
+      # `patchedDependencies` la patch dei font di Excalidraw (30/09/2026) e pnpm
+      # legge il file anche installando solo il sottoalbero del desktop. Senza,
+      # l'installazione si ferma con ENOENT (run 38416801847, 13/10/2026).
       # ---------------------------------------------------------------------
       - name: Sorgente (RiverMeet, privato)
-        uses: actions/checkout@v4
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           repository: ClauWeb69/RiverMeet
           ref: ${{ inputs.source_ref }}
@@ -69,10 +74,11 @@ jobs:
           sparse-checkout: |
             apps/desktop
             packages/shared
+            patches
           persist-credentials: false
 
       - name: Node 22
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 22
 
@@ -159,7 +165,7 @@ jobs:
       # L'installer anche come artefatto del run: si scarica e si collauda
       # senza dipendere dallo stato della release.
       - name: Installer come artefatto
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: Simposia-Docente-Setup-v${{ steps.versione.outputs.version }}
           path: apps/desktop/release/Simposia-Docente-Setup.exe
