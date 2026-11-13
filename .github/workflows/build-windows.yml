@@ -28,11 +28,14 @@ on:
       source_ref:
         description: "Commit di RiverMeet da cui costruire (SHA COMPLETO, non un branch)"
         required: true
+      # Solo draft (12/11/2026): la bozza diventa pubblica a mano, dopo l'avvio di prova
+      # qui sotto e il collaudo del runbook. Una release pubblica creata da qui sarebbe
+      # gia' scaricata dai docenti prima di sapere se l'app parte.
       release_type:
         description: "draft = crea la release nascosta, da pubblicare a mano dopo il collaudo"
         required: true
         type: choice
-        options: [draft, release]
+        options: [draft]
         default: draft
 
 # Il minimo indispensabile: scrivere la release in QUESTO repo.
@@ -141,7 +144,7 @@ jobs:
         run: >
           pnpm -F @simposia/desktop exec electron-builder
           --publish always
-          --config.publish.releaseType=${{ inputs.release_type }}
+          --config.publish.releaseType=draft
           "--config.releaseInfo.releaseNotes=Costruito da RiverMeet@${{ inputs.source_ref }}"
         shell: pwsh
         env:
@@ -160,6 +163,30 @@ jobs:
           }
           Write-Host "Feed presente:"
           Get-Content $feed
+        shell: pwsh
+
+      # L'app INSTALLATA deve partire davvero: typecheck e test non vedono un modulo mancante
+      # nel bundle o un crash del processo main, che in Electron mostra una finestra d'errore
+      # e lascia il processo vivo. Con SIMPOSIA_SMOKE=1 l'app controlla che Forma.Temp si
+      # risolva, scrive l'esito in SIMPOSIA_SMOKE_OUT ed esce (apps/desktop/src/main/smoke.ts).
+      # Non prova il deep-link ne' la condivisione schermo, che restano una prova a mano
+      # (runbook §3a). Se fallisce, la release resta una bozza mai pubblicata.
+      - name: Avvio di prova dell app installata
+        run: |
+          Start-Process -FilePath "apps/desktop/release/Simposia-Docente-Setup.exe" -ArgumentList "/S" -Wait
+          $exe = Get-ChildItem "$env:LOCALAPPDATA\Programs" -Recurse -Filter "Simposia Docente.exe" | Where-Object { $_.Name -notlike "Uninstall*" } | Select-Object -First 1
+          if (-not $exe) { Write-Host "Dopo l installazione non trovo Simposia Docente.exe sotto $env:LOCALAPPDATA\Programs."; exit 1 }
+          $out = Join-Path $env:RUNNER_TEMP "simposia-smoke.txt"
+          $env:SIMPOSIA_SMOKE = "1"
+          $env:SIMPOSIA_SMOKE_OUT = $out
+          $p = Start-Process -FilePath $exe.FullName -PassThru
+          $null = $p.Handle
+          if (-not $p.WaitForExit(60000)) { Stop-Process -Id $p.Id -Force; Write-Host "L app non e uscita entro 60 s."; exit 1 }
+          if (-not (Test-Path $out)) { Write-Host "L app non ha scritto l esito in ${out} (codice $($p.ExitCode))."; exit 1 }
+          $esito = Get-Content $out -Raw
+          Write-Host "Esito: $esito"
+          if ($p.ExitCode -ne 0 -or $esito -notmatch "^smoke: avvio riuscito") { Write-Host "Avvio di prova fallito, codice $($p.ExitCode)."; exit 1 }
+          Write-Host "Avvio di prova riuscito: $($exe.FullName)"
         shell: pwsh
 
       # L'installer anche come artefatto del run: si scarica e si collauda
